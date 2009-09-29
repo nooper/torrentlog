@@ -1,4 +1,4 @@
 all: torrentlog
 
 torrentlog: torrentlog.c
-	gcc -o torrentlog torrentlog.c -lpcap
+	gcc `pkg-config --cflags --libs glib-2.0` -Imysql -lmysqlclient -lpcap -o torrentlog torrentlog.c
