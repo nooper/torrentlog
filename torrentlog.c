@@ -343,20 +343,9 @@ unsigned int selectTorrent( MYSQL * db, char * infohash ) {
 }
 
 unsigned int getTrackerID( MYSQL * db, char *hostname ) {
-	static GStringChunk * stringmem = NULL;
-	static GHashTable * cache = NULL;
-	if( stringmem == NULL ) {
-		stringmem = g_string_chunk_new(1024);
-		cache = g_hash_table_new( g_str_hash, g_str_equal );
-	}
-	unsigned int trackerid = (unsigned int)g_hash_table_lookup( cache, hostname );
+	unsigned int trackerid = selectTracker( db, hostname );
 	if( trackerid == 0 ) {
-		trackerid = selectTracker( db, hostname );
-		if( trackerid == 0 ) {
-			trackerid = insertTracker( db, hostname );
-		}
-		gchar* hostnamecopy = g_string_chunk_insert( stringmem, hostname );
-		g_hash_table_insert( cache, hostnamecopy, (gpointer)trackerid );
+		trackerid = insertTracker( db, hostname );
 	}
 	return trackerid;
 }
@@ -371,18 +360,9 @@ gboolean infohashequal( gconstpointer v1, gconstpointer v2 ) {
 }
 
 unsigned int getTorrentID( MYSQL * db, char *infohash ) {
-	static GHashTable * cache = NULL;
-	if( cache == NULL ) {
-		cache = g_hash_table_new( hashinfohash, infohashequal );
-	}
-	unsigned int torrentid = (unsigned int)g_hash_table_lookup( cache, infohash );
+	unsigned int torrentid = selectTorrent( db, infohash );
 	if( torrentid == 0 ) {
-		torrentid = selectTorrent( db, infohash );
-		if( torrentid == 0 ) {
-			torrentid = insertTorrent( db, infohash );
-		}
-		gpointer* newinfohash = g_slice_copy( 20, infohash );
-		g_hash_table_insert( cache, newinfohash, (gpointer)torrentid );
+		torrentid = insertTorrent( db, infohash );
 	}
 	return torrentid;
 }
