@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <mysql/mysql.h>
+#include <mysql/errmsg.h>
 #include <glib.h>
 #include <glob.h>
 #include <libgen.h>
@@ -12,16 +13,389 @@
 #include <glib/gprintf.h>
 #include <string.h>
 #include <curl/curl.h>
+#include <arpa/inet.h>
 
 void myexit( const char * msg ) {
 	fprintf( stderr, "%s\n", msg );
 	exit(EXIT_FAILURE);
 }
 
+unsigned long insertTracker( MYSQL * db, char * hostname ) {
+	static MYSQL_STMT *stmt;
+	static MYSQL_BIND bind;
+	static my_bool is_null;
+	static my_bool stmterror;
+	static int prepared = 0;
+	static char input_hostname[256];
+	static unsigned long inlen;
+	if( prepared == 0 ) {
+		stmt = mysql_stmt_init(db);
+		char * query = "INSERT INTO trackers(url) VALUES(?)";
+		if( mysql_stmt_prepare( stmt, query, strlen(query) ) ) {
+			myexit( mysql_stmt_error(stmt) );
+		}
+		memset(&bind, 0, sizeof(bind));
+		bind.buffer_type = MYSQL_TYPE_STRING;
+		bind.buffer = input_hostname;
+		bind.buffer_length = 256;
+		bind.length = &inlen;
+		bind.is_null = &is_null;
+		is_null = 0;
+		bind.error = &stmterror;
+		if( mysql_stmt_bind_param(stmt, &bind) ) {
+			mysql_stmt_error(stmt);
+		}
+		prepared = 1;
+	}
+	strncpy( input_hostname, hostname, 256 );
+	inlen = strlen(input_hostname);
+	if( mysql_stmt_execute(stmt) ) {
+		myexit( mysql_stmt_error(stmt) );
+	}
+	return (unsigned long)mysql_stmt_insert_id(stmt);
+}
+
+unsigned long insertTorrent( MYSQL * db, char * infohash ) {
+	static MYSQL_STMT *stmt;
+	static MYSQL_BIND bind;
+	static my_bool is_null;
+	static my_bool stmterror;
+	static int prepared = 0;
+	static char input_infohash[20];
+	static unsigned long inlen = 20;
+	if( prepared == 0 ) {
+		stmt = mysql_stmt_init(db);
+		char * query = "INSERT INTO torrents(infohash) VALUES(?)";
+		if( mysql_stmt_prepare( stmt, query, strlen(query) ) ) {
+			myexit( mysql_stmt_error(stmt) );
+		}
+		memset(&bind, 0, sizeof(bind));
+		bind.buffer_type = MYSQL_TYPE_BLOB;
+		bind.buffer = input_infohash;
+		bind.buffer_length = 20;
+		bind.length = &inlen;
+		bind.is_null = &is_null;
+		is_null = 0;
+		bind.error = &stmterror;
+		if( mysql_stmt_bind_param(stmt, &bind) ) {
+			mysql_stmt_error(stmt);
+		}
+		prepared = 1;
+	}
+	memcpy( input_infohash, infohash, 20 );
+	if( mysql_stmt_execute(stmt) ) {
+		myexit( mysql_stmt_error(stmt) );
+	}
+	return (unsigned long)mysql_stmt_insert_id(stmt);
+}
+
+void insertHandshake( MYSQL * db, unsigned int torrentid, unsigned int sip, unsigned int dip ) {
+	static MYSQL_STMT *stmt;
+	static MYSQL_BIND bind[3];
+	static my_bool is_null[3];
+	static my_bool is_unsigned[3];
+	static my_bool stmterror[3];
+	static int prepared = 0;
+	static unsigned int input_torrentid;
+	static unsigned int input_sip;
+	static unsigned int input_dip;
+	if( prepared == 0 ) {
+		stmt = mysql_stmt_init(db);
+		char * query = "INSERT INTO handshakes(torrentid, sip, dip) VALUES(?,?,?)";
+		if( mysql_stmt_prepare( stmt, query, strlen(query) ) ) {
+			myexit( mysql_stmt_error(stmt) );
+		}
+		memset(&bind, 0, sizeof(bind));
+		bind[0].buffer_type = MYSQL_TYPE_LONG;
+		bind[0].buffer = &input_torrentid;
+		bind[0].buffer_length = sizeof(input_torrentid);
+		bind[0].is_null = (my_bool*)0;
+		bind[0].is_unsigned = 1;
+		bind[0].error = &stmterror[0];
+		bind[1].buffer_type = MYSQL_TYPE_LONG;
+		bind[1].buffer = &input_sip;
+		bind[1].buffer_length = sizeof(input_sip);
+		bind[1].is_null = (my_bool*)0;
+		bind[1].is_unsigned = 1;
+		bind[1].error = &stmterror[1];
+		bind[2].buffer_type = MYSQL_TYPE_LONG;
+		bind[2].buffer = &input_dip;
+		bind[2].buffer_length = sizeof(input_dip);
+		bind[2].is_null = (my_bool*)0;
+		bind[2].is_unsigned = 1;
+		bind[2].error = &stmterror[2];
+		if( mysql_stmt_bind_param(stmt, bind) ) {
+			mysql_stmt_error(stmt);
+		}
+		prepared = 1;
+	}
+	input_torrentid = torrentid;
+	input_sip = sip;
+	input_dip = dip;
+	int status = mysql_stmt_execute(stmt);
+	switch (status) {
+		case 0:
+			break;
+		case CR_COMMANDS_OUT_OF_SYNC:
+			printf("out of sync\n");
+			break;
+		case CR_OUT_OF_MEMORY:
+			printf("out of memory\n");
+			break;
+		case CR_SERVER_GONE_ERROR:
+			printf("server gone\n");
+			break;
+		case CR_SERVER_LOST:
+			printf("server lost\n");
+			break;
+		case CR_UNKNOWN_ERROR:
+			myexit( mysql_stmt_error(stmt) );
+			break;
+		case 1: //duplicate key exists. found by testing, not documented by mysql
+			break;
+		default:
+			printf("status: %u\n", status);
+			myexit( mysql_stmt_error(stmt) );
+			break;
+
+	}
+}
+
+void insertAnnounce( MYSQL * db, unsigned int trackerid, unsigned int torrentid ) {
+	static MYSQL_STMT *stmt;
+	static MYSQL_BIND bind[2];
+	static my_bool stmterror[2];
+	static int prepared = 0;
+	static unsigned int input_trackerid;
+	static unsigned int input_torrentid;
+	if( prepared == 0 ) {
+		stmt = mysql_stmt_init(db);
+		char * query = "INSERT INTO announces(trackerid, torrentid) VALUES(?,?)";
+		if( mysql_stmt_prepare( stmt, query, strlen(query) ) ) {
+			myexit( mysql_stmt_error(stmt) );
+		}
+		memset(&bind, 0, sizeof(bind));
+		bind[0].buffer_type = MYSQL_TYPE_LONG;
+		bind[0].buffer = &input_trackerid;
+		bind[0].buffer_length = sizeof(input_trackerid);
+		bind[0].is_null = (my_bool*)0;
+		bind[0].is_unsigned = 1;
+		bind[0].error = &stmterror[0];
+		bind[1].buffer_type = MYSQL_TYPE_LONG;
+		bind[1].buffer = &input_torrentid;
+		bind[1].buffer_length = sizeof(input_torrentid);
+		bind[1].is_null = (my_bool*)0;
+		bind[1].is_unsigned = 1;
+		bind[1].error = &stmterror[1];
+		if( mysql_stmt_bind_param(stmt, bind) ) {
+			mysql_stmt_error(stmt);
+		}
+		prepared = 1;
+	}
+	input_trackerid = trackerid;
+	input_torrentid = torrentid;
+	int status = mysql_stmt_execute(stmt);
+	switch (status) {
+		case 0:
+			break;
+		case CR_COMMANDS_OUT_OF_SYNC:
+			printf("out of sync\n");
+			break;
+		case CR_OUT_OF_MEMORY:
+			printf("out of memory\n");
+			break;
+		case CR_SERVER_GONE_ERROR:
+			printf("server gone\n");
+			break;
+		case CR_SERVER_LOST:
+			printf("server lost\n");
+			break;
+		case CR_UNKNOWN_ERROR:
+			myexit( mysql_stmt_error(stmt) );
+			break;
+		case 1: //duplicate key exists. found by testing, not documented by mysql
+			break;
+		default:
+			printf("status: %u\n", status);
+			myexit( mysql_stmt_error(stmt) );
+			break;
+
+	}
+}
+
+unsigned int selectTracker( MYSQL * db, char * hostname ) {
+	static MYSQL_STMT *stmt;
+	static MYSQL_BIND bind[2];
+	static int prepared = 0;
+	unsigned int trackerid;
+	char input_hostname[256];
+	static my_bool is_null[2];
+	static my_bool stmterror[2];
+	static unsigned long inlen;
+	if( prepared == 0 ) {
+		stmt = mysql_stmt_init(db);
+		char * query = "SELECT trackerid FROM trackers WHERE url = ?";
+		if( mysql_stmt_prepare( stmt, query, strlen(query) ) ) {
+			myexit( mysql_stmt_error(stmt) );
+		}
+		memset(bind, 0, sizeof(bind));
+		bind[0].buffer_type = MYSQL_TYPE_LONG;
+		bind[0].buffer = &trackerid;
+		bind[0].buffer_length = sizeof(trackerid);
+		bind[0].is_null = &is_null[0];
+		bind[0].error = &stmterror[0];
+		if( mysql_stmt_bind_result( stmt, &bind[0] ) ) {
+			myexit( mysql_error(db) );
+		}
+
+		bind[1].buffer_type =  MYSQL_TYPE_STRING;
+		bind[1].buffer = input_hostname;
+		bind[1].buffer_length = 256;
+		bind[1].length = &inlen;
+		bind[1].is_null = &is_null[1];
+		is_null[1] = 0;
+		bind[1].error = &stmterror[1];
+		if( mysql_stmt_bind_param( stmt, &bind[1] ) ) {
+			mysql_stmt_error(stmt);
+		}
+		prepared = 1;
+	}
+	strncpy( input_hostname, hostname, 256 );
+	inlen = strlen(input_hostname);
+	if( mysql_stmt_execute(stmt) ) {
+		myexit( mysql_stmt_error(stmt) );
+	}
+	int result = mysql_stmt_fetch(stmt);
+	switch ( result ) {
+		case 0:
+			break;
+		case 1:
+			trackerid = 0;
+			break;
+		case MYSQL_NO_DATA:
+			trackerid = 0;
+			break;
+		case MYSQL_DATA_TRUNCATED:
+			return 0;
+			break;
+	}
+	mysql_stmt_free_result(stmt);
+	return trackerid;
+}
+
+unsigned int selectTorrent( MYSQL * db, char * infohash ) {
+	static MYSQL_STMT *stmt;
+	static MYSQL_BIND bind[2];
+	static int prepared = 0;
+	unsigned int torrentid;
+	char input_infohash[256];
+	static my_bool is_null[2];
+	static my_bool stmterror[2];
+	unsigned long inlen = 20;
+	if( prepared == 0 ) {
+		stmt = mysql_stmt_init(db);
+		char * query = "SELECT torrentid FROM torrents WHERE infohash = ?";
+		if( mysql_stmt_prepare( stmt, query, strlen(query) ) ) {
+			myexit( mysql_stmt_error(stmt) );
+		}
+		memset(bind, 0, sizeof(bind));
+		bind[0].buffer_type = MYSQL_TYPE_LONG;
+		bind[0].buffer = &torrentid;
+		bind[0].buffer_length = sizeof(torrentid);
+		bind[0].is_null = &is_null[0];
+		bind[0].error = &stmterror[0];
+		if( mysql_stmt_bind_result( stmt, &bind[0] ) ) {
+			myexit( mysql_error(db) );
+		}
+
+		bind[1].buffer_type =  MYSQL_TYPE_BLOB;
+		bind[1].buffer = input_infohash;
+		bind[1].buffer_length = 20;
+		bind[1].length = &inlen;
+		bind[1].is_null = &is_null[1];
+		is_null[1] = 0;
+		bind[1].error = &stmterror[1];
+		if( mysql_stmt_bind_param( stmt, &bind[1] ) ) {
+			mysql_stmt_error(stmt);
+		}
+		prepared = 1;
+	}
+	memcpy( input_infohash, infohash, 20 );
+	if( mysql_stmt_execute(stmt) ) {
+		myexit( mysql_stmt_error(stmt) );
+	}
+	int result = mysql_stmt_fetch(stmt);
+	switch ( result ) {
+		case 0:
+			break;
+		case 1:
+			torrentid = 0;
+			break;
+		case MYSQL_NO_DATA:
+			torrentid = 0;
+			break;
+		case MYSQL_DATA_TRUNCATED:
+			return 0;
+			break;
+	}
+	mysql_stmt_free_result(stmt);
+	return torrentid;
+}
+
+unsigned int getTrackerID( MYSQL * db, char *hostname ) {
+	static GStringChunk * stringmem = NULL;
+	static GHashTable * cache = NULL;
+	if( stringmem == NULL ) {
+		stringmem = g_string_chunk_new(1024);
+		cache = g_hash_table_new( g_str_hash, g_str_equal );
+	}
+	unsigned int trackerid = (unsigned int)g_hash_table_lookup( cache, hostname );
+	if( trackerid == 0 ) {
+		trackerid = selectTracker( db, hostname );
+		if( trackerid == 0 ) {
+			trackerid = insertTracker( db, hostname );
+		}
+		gchar* hostnamecopy = g_string_chunk_insert( stringmem, hostname );
+		g_hash_table_insert( cache, hostnamecopy, (gpointer)trackerid );
+	}
+	return trackerid;
+}
+
+guint hashinfohash( gconstpointer v1 ) {
+	char * infohash = (char*)v1;
+	return (guint)infohash[0];
+}
+
+gboolean infohashequal( gconstpointer v1, gconstpointer v2 ) {
+	return memcmp( v1, v2, 20 );
+}
+
+unsigned int getTorrentID( MYSQL * db, char *infohash ) {
+	static GHashTable * cache = NULL;
+	if( cache == NULL ) {
+		cache = g_hash_table_new( hashinfohash, infohashequal );
+	}
+	unsigned int torrentid = (unsigned int)g_hash_table_lookup( cache, infohash );
+	if( torrentid == 0 ) {
+		torrentid = selectTorrent( db, infohash );
+		if( torrentid == 0 ) {
+			torrentid = insertTorrent( db, infohash );
+		}
+		gpointer* newinfohash = g_slice_copy( 20, infohash );
+		g_hash_table_insert( cache, newinfohash, (gpointer)torrentid );
+	}
+	return torrentid;
+}
+
 void logHandshake( MYSQL *db, unsigned int sip, unsigned int dip, char *infohash ) {
+	unsigned int torrentid = getTorrentID( db, infohash );
+	insertHandshake( db, torrentid, ntohl(sip), ntohl(dip) );
 }
 
 void logAnnounce( MYSQL *db, char *infohash, char *hostname ) {
+	unsigned int trackerid = getTrackerID( db, hostname );
+	unsigned int torrentid = getTorrentID( db, infohash );
+	insertAnnounce( db, trackerid, torrentid );
 }
 
 unsigned int readpcap( pcap_t * in, unsigned int prevcount, MYSQL *db ) {
@@ -29,6 +403,7 @@ unsigned int readpcap( pcap_t * in, unsigned int prevcount, MYSQL *db ) {
 	struct pcap_pkthdr *header;
 	const u_char *packetdata;
 	unsigned int curcount = 0;
+	CURL *curlobj = curl_easy_init();
 	//loop over packets
 	while( pcap_next_ex( in, &header, &packetdata ) == 1 ) {
 		curcount++;
@@ -52,54 +427,27 @@ unsigned int readpcap( pcap_t * in, unsigned int prevcount, MYSQL *db ) {
 		int totalHeaderLen = sizeof(struct ether_header) + ipHeaderLen + tcpHeaderLen;
 		const u_char* tcpdata = packetdata + totalHeaderLen;
 		int tcpdatalen = header->len - totalHeaderLen;
-		switch ( *tcpdata ) {
-			case 0x13:
-				if( strncmp((char*)tcpdata+1, "BitTorrent protocol", 19) != 0 ) {
-					continue;
-				}
-
-				//insert to DB
-				printf("%s -> ", inet_ntoa(ipheader->saddr));
-				printf("%s      \t", inet_ntoa(ipheader->daddr));
-				char *infohash = (char*)tcpdata + 28;
-				logHandshake( db, ipheader->saddr, ipheader->daddr, infohash );
-				char *peerid = infohash + 20;
-				printf("infohash: ");
-				int count = 0;
-				while(count < 20) {
-					printf("%.2hhX", infohash[count++]);
-				}
-				if( tcpdatalen >= 68 ) {
-					printf(" ");
-					fwrite(peerid, 8, 1, stdout);
-				}
-				printf("\n");
-				break;
-
-			case 0x47:
-				3;
-				char * newline = index(tcpdata, '\r');
-				int linelen = (int)newline - (int)tcpdata;
-				CURL *curlobj = curl_easy_init();
-				int outlen;
-				char* realurl = curl_easy_unescape(curlobj, tcpdata, linelen, &outlen);
-				curl_free(realurl);
-				curl_easy_cleanup(curlobj);
-				char* infohashbegin = g_strstr_len( realurl, outlen, "info_hash") + 10;
-				printf("infohash: ");
-				count = 0;
-				while(count < 20) {
-					printf("%.2hhX", infohashbegin[count++]);
-				}
-				printf(" ");
-				char *hostname = g_strstr_len( tcpdata, tcpdatalen, "Host: ");
-				newline = index(hostname, 0x0D);
-				linelen = (int)newline - (int)hostname;
-				fwrite(hostname, linelen, 1, stdout);
-				printf("\n");
-				break;
+		if( *tcpdata == 19 ) {
+			if( strncmp((char*)tcpdata+1, "BitTorrent protocol", 19) != 0 ) {
+				continue;
+			}
+			//insert to DB
+			char *infohash = (char*)tcpdata + 28;
+			logHandshake( db, ipheader->saddr, ipheader->daddr, infohash );
+		} else if( *tcpdata == 'G' ) {
+			char * newline = index(tcpdata, '\r');
+			int linelen = (int)newline - (int)tcpdata;
+			int outlen;
+			char* realurl = curl_easy_unescape(curlobj, tcpdata, linelen, &outlen);
+			char* infohashbegin = g_strstr_len( realurl, outlen, "info_hash") + 10;
+			char *hostname = g_strstr_len( tcpdata, tcpdatalen, "Host: ") + 6;
+			newline = index(hostname, 0x0D);
+			*newline = '\0';
+			logAnnounce( db, infohashbegin, hostname );
+			curl_free(realurl);
 		}
 	}
+	curl_easy_cleanup(curlobj);
 	return curcount;
 }
 
