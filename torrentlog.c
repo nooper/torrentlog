@@ -14,6 +14,28 @@
 #include <string.h>
 #include <curl/curl.h>
 #include <arpa/inet.h>
+#include <search.h>
+
+struct torrent {
+	unsigned char * infohash;
+	unsigned int torrentid;
+};
+
+struct tracker {
+	char * hostname;
+	unsigned int trackerid;
+};
+
+struct announce {
+	unsigned int trackerid;
+	unsigned int torrentid;
+};
+
+struct handshake {
+	unsigned int sip;
+	unsigned int dip;
+	unsigned int torrentid;
+};
 
 void myexit( const char * msg ) {
 	fprintf( stderr, "%s\n", msg );
@@ -342,40 +364,97 @@ unsigned int selectTorrent( MYSQL * db, char * infohash ) {
 	return torrentid;
 }
 
+int trackerCompare( const void * ta, const void * tb ) {
+	struct tracker * first = (struct tracker*)ta;
+	struct tracker * second = (struct tracker*)tb;
+	return strncmp( first->hostname, second->hostname, 255 );
+}
+
 unsigned int getTrackerID( MYSQL * db, char *hostname ) {
-	unsigned int trackerid = selectTracker( db, hostname );
-	if( trackerid == 0 ) {
-		trackerid = insertTracker( db, hostname );
+	static void * treeroot = NULL;
+	struct tracker findme, *found, *insertme;
+	findme.hostname = hostname;
+	void * result = tfind( &findme, &treeroot, trackerCompare );
+	if( result == NULL ) {
+		unsigned int trackerid = selectTracker( db, hostname );
+		if( trackerid == 0 ) {
+			trackerid = insertTracker( db, hostname );
+		}
+		insertme = (struct tracker*)malloc(sizeof(struct tracker));
+		insertme->hostname = (char*)malloc(strlen(hostname) + 1);
+		strcpy( insertme->hostname, hostname );
+		insertme->trackerid = trackerid;
+		tsearch( insertme, &treeroot, trackerCompare );
+		found = insertme;
+	} else {
+		found = *(struct tracker**)result;
 	}
-	return trackerid;
+	return found->trackerid;
 }
 
-guint hashinfohash( gconstpointer v1 ) {
-	char * infohash = (char*)v1;
-	return (guint)infohash[0];
-}
-
-gboolean infohashequal( gconstpointer v1, gconstpointer v2 ) {
-	return memcmp( v1, v2, 20 );
+int torrentCompare( const void * ta, const void * tb ) {
+	struct torrent * first = (struct torrent*)ta;
+	struct torrent * second = (struct torrent*)tb;
+	return memcmp( first->infohash, second->infohash, 20 );
 }
 
 unsigned int getTorrentID( MYSQL * db, char *infohash ) {
-	unsigned int torrentid = selectTorrent( db, infohash );
-	if( torrentid == 0 ) {
-		torrentid = insertTorrent( db, infohash );
+	static void * treeroot = NULL;
+	struct torrent findme, *found, *insertme;
+	findme.infohash = infohash;
+	void * result = tfind( &findme, &treeroot, torrentCompare );
+	if( result == NULL ) {
+		unsigned int torrentid = selectTorrent( db, infohash );
+		if( torrentid == 0 ) {
+			torrentid = insertTorrent( db, infohash );
+		}
+		insertme = (struct torrent*)malloc(sizeof(struct torrent));
+		insertme->infohash = malloc(20);
+		memcpy( insertme->infohash, infohash, 20 );
+		insertme->torrentid = torrentid;
+		tsearch( insertme, &treeroot, torrentCompare );
+		found = insertme;
+	} else {
+		found = *(struct torrent**)result;
 	}
-	return torrentid;
+	return found->torrentid;
+}
+
+int handshakeCompare( const void * ta, const void * tb ) {
+	return memcmp( ta, tb, sizeof(struct handshake) );
 }
 
 void logHandshake( MYSQL *db, unsigned int sip, unsigned int dip, char *infohash ) {
-	unsigned int torrentid = getTorrentID( db, infohash );
-	insertHandshake( db, torrentid, ntohl(sip), ntohl(dip) );
+	static void * treeroot = NULL;
+	struct handshake findme;
+	findme.torrentid = getTorrentID( db, infohash );
+	findme.sip = sip;
+	findme.dip = dip;
+	void * result = tfind( &findme, &treeroot, handshakeCompare );
+	if( result == NULL ) {
+		insertHandshake( db, findme.torrentid, ntohl(sip), ntohl(dip) );
+		struct handshake * insertme = g_slice_copy( sizeof(struct handshake), &findme );
+		tsearch( insertme, &treeroot, handshakeCompare );
+	}
+}
+
+int announceCompare( const void * ta, const void * tb ) {
+	return memcmp( ta, tb, sizeof(struct announce) );
 }
 
 void logAnnounce( MYSQL *db, char *infohash, char *hostname ) {
-	unsigned int trackerid = getTrackerID( db, hostname );
-	unsigned int torrentid = getTorrentID( db, infohash );
-	insertAnnounce( db, trackerid, torrentid );
+	static void * treeroot = NULL;
+	struct announce findme;
+	findme.trackerid = getTrackerID( db, hostname );
+	findme.torrentid = getTorrentID( db, infohash );
+	void * result = tfind( &findme, &treeroot, announceCompare );
+	if( result == NULL ) {
+		insertAnnounce( db, findme.trackerid, findme.torrentid );
+		struct announce * insertme = (struct announce*)malloc(sizeof(struct announce));
+		insertme->trackerid = findme.trackerid;
+		insertme->torrentid = findme.torrentid;
+		tsearch( insertme, &treeroot, announceCompare );
+	}
 }
 
 unsigned int readpcap( pcap_t * in, unsigned int prevcount, MYSQL *db ) {
