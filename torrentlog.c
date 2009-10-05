@@ -77,7 +77,7 @@ unsigned long insertTracker( MYSQL * db, char * hostname ) {
 	return (unsigned long)mysql_stmt_insert_id(stmt);
 }
 
-unsigned long insertTorrent( MYSQL * db, char * infohash ) {
+unsigned long insertTorrent( MYSQL * db, unsigned char * infohash ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind;
 	static my_bool is_null;
@@ -249,8 +249,8 @@ unsigned int selectTracker( MYSQL * db, char * hostname ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind[2];
 	static int prepared = 0;
-	unsigned int trackerid;
-	char input_hostname[256];
+	static unsigned int trackerid;
+	static char input_hostname[256];
 	static my_bool is_null[2];
 	static my_bool stmterror[2];
 	static unsigned long inlen;
@@ -305,15 +305,15 @@ unsigned int selectTracker( MYSQL * db, char * hostname ) {
 	return trackerid;
 }
 
-unsigned int selectTorrent( MYSQL * db, char * infohash ) {
+unsigned int selectTorrent( MYSQL * db, unsigned char * infohash ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind[2];
 	static int prepared = 0;
-	unsigned int torrentid;
-	char input_infohash[256];
+	static unsigned int torrentid;
+	static unsigned char input_infohash[20];
 	static my_bool is_null[2];
 	static my_bool stmterror[2];
-	unsigned long inlen = 20;
+	static unsigned long inlen = 20;
 	if( prepared == 0 ) {
 		stmt = mysql_stmt_init(db);
 		char * query = "SELECT torrentid FROM torrents WHERE infohash = ?";
@@ -336,6 +336,7 @@ unsigned int selectTorrent( MYSQL * db, char * infohash ) {
 		bind[1].length = &inlen;
 		bind[1].is_null = &is_null[1];
 		is_null[1] = 0;
+		bind[1].is_unsigned = 1;
 		bind[1].error = &stmterror[1];
 		if( mysql_stmt_bind_param( stmt, &bind[1] ) ) {
 			mysql_stmt_error(stmt);
@@ -398,6 +399,7 @@ int torrentCompare( const void * ta, const void * tb ) {
 	return memcmp( first->infohash, second->infohash, 20 );
 }
 
+
 unsigned int getTorrentID( MYSQL * db, char *infohash ) {
 	static void * treeroot = NULL;
 	struct torrent findme, *found, *insertme;
@@ -450,9 +452,7 @@ void logAnnounce( MYSQL *db, char *infohash, char *hostname ) {
 	void * result = tfind( &findme, &treeroot, announceCompare );
 	if( result == NULL ) {
 		insertAnnounce( db, findme.trackerid, findme.torrentid );
-		struct announce * insertme = (struct announce*)malloc(sizeof(struct announce));
-		insertme->trackerid = findme.trackerid;
-		insertme->torrentid = findme.torrentid;
+		struct announce * insertme = g_slice_copy( sizeof(struct announce), &findme );
 		tsearch( insertme, &treeroot, announceCompare );
 	}
 }
