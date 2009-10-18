@@ -15,6 +15,10 @@
 #include <curl/curl.h>
 #include <arpa/inet.h>
 #include <search.h>
+#include <sys/inotify.h>
+
+MYSQL *db;
+CURL *curlobj;
 
 struct torrent {
 	unsigned char * infohash;
@@ -42,7 +46,7 @@ void myexit( const char * msg ) {
 	exit(EXIT_FAILURE);
 }
 
-unsigned long insertTracker( MYSQL * db, char * hostname ) {
+unsigned long insertTracker( char * hostname ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind;
 	static my_bool is_null;
@@ -77,7 +81,7 @@ unsigned long insertTracker( MYSQL * db, char * hostname ) {
 	return (unsigned long)mysql_stmt_insert_id(stmt);
 }
 
-unsigned long insertTorrent( MYSQL * db, unsigned char * infohash ) {
+unsigned long insertTorrent( unsigned char * infohash ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind;
 	static my_bool is_null;
@@ -111,7 +115,7 @@ unsigned long insertTorrent( MYSQL * db, unsigned char * infohash ) {
 	return (unsigned long)mysql_stmt_insert_id(stmt);
 }
 
-void insertHandshake( MYSQL * db, unsigned int torrentid, unsigned int sip, unsigned int dip ) {
+void insertHandshake( unsigned int torrentid, unsigned int sip, unsigned int dip ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind[3];
 	static my_bool is_null[3];
@@ -183,7 +187,7 @@ void insertHandshake( MYSQL * db, unsigned int torrentid, unsigned int sip, unsi
 	}
 }
 
-void insertAnnounce( MYSQL * db, unsigned int trackerid, unsigned int torrentid ) {
+void insertAnnounce( unsigned int trackerid, unsigned int torrentid ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind[2];
 	static my_bool stmterror[2];
@@ -245,7 +249,7 @@ void insertAnnounce( MYSQL * db, unsigned int trackerid, unsigned int torrentid 
 	}
 }
 
-unsigned int selectTracker( MYSQL * db, char * hostname ) {
+unsigned int selectTracker( char * hostname ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind[2];
 	static int prepared = 0;
@@ -305,7 +309,7 @@ unsigned int selectTracker( MYSQL * db, char * hostname ) {
 	return trackerid;
 }
 
-unsigned int selectTorrent( MYSQL * db, unsigned char * infohash ) {
+unsigned int selectTorrent( unsigned char * infohash ) {
 	static MYSQL_STMT *stmt;
 	static MYSQL_BIND bind[2];
 	static int prepared = 0;
@@ -371,15 +375,15 @@ int trackerCompare( const void * ta, const void * tb ) {
 	return strncmp( first->hostname, second->hostname, 255 );
 }
 
-unsigned int getTrackerID( MYSQL * db, char *hostname ) {
+unsigned int getTrackerID( char *hostname ) {
 	static void * treeroot = NULL;
 	struct tracker findme, *found, *insertme;
 	findme.hostname = hostname;
 	void * result = tfind( &findme, &treeroot, trackerCompare );
 	if( result == NULL ) {
-		unsigned int trackerid = selectTracker( db, hostname );
+		unsigned int trackerid = selectTracker( hostname );
 		if( trackerid == 0 ) {
-			trackerid = insertTracker( db, hostname );
+			trackerid = insertTracker( hostname );
 		}
 		insertme = (struct tracker*)malloc(sizeof(struct tracker));
 		insertme->hostname = (char*)malloc(strlen(hostname) + 1);
@@ -399,16 +403,15 @@ int torrentCompare( const void * ta, const void * tb ) {
 	return memcmp( first->infohash, second->infohash, 20 );
 }
 
-
-unsigned int getTorrentID( MYSQL * db, char *infohash ) {
+unsigned int getTorrentID( char *infohash ) {
 	static void * treeroot = NULL;
 	struct torrent findme, *found, *insertme;
 	findme.infohash = infohash;
 	void * result = tfind( &findme, &treeroot, torrentCompare );
 	if( result == NULL ) {
-		unsigned int torrentid = selectTorrent( db, infohash );
+		unsigned int torrentid = selectTorrent( infohash );
 		if( torrentid == 0 ) {
-			torrentid = insertTorrent( db, infohash );
+			torrentid = insertTorrent( infohash );
 		}
 		insertme = (struct torrent*)malloc(sizeof(struct torrent));
 		insertme->infohash = malloc(20);
@@ -426,15 +429,15 @@ int handshakeCompare( const void * ta, const void * tb ) {
 	return memcmp( ta, tb, sizeof(struct handshake) );
 }
 
-void logHandshake( MYSQL *db, unsigned int sip, unsigned int dip, char *infohash ) {
+void logHandshake( unsigned int sip, unsigned int dip, char *infohash ) {
 	static void * treeroot = NULL;
 	struct handshake findme;
-	findme.torrentid = getTorrentID( db, infohash );
+	findme.torrentid = getTorrentID( infohash );
 	findme.sip = sip;
 	findme.dip = dip;
 	void * result = tfind( &findme, &treeroot, handshakeCompare );
 	if( result == NULL ) {
-		insertHandshake( db, findme.torrentid, ntohl(sip), ntohl(dip) );
+		insertHandshake( findme.torrentid, ntohl(sip), ntohl(dip) );
 		struct handshake * insertme = g_slice_copy( sizeof(struct handshake), &findme );
 		tsearch( insertme, &treeroot, handshakeCompare );
 	}
@@ -444,25 +447,24 @@ int announceCompare( const void * ta, const void * tb ) {
 	return memcmp( ta, tb, sizeof(struct announce) );
 }
 
-void logAnnounce( MYSQL *db, char *infohash, char *hostname ) {
+void logAnnounce( char *infohash, char *hostname ) {
 	static void * treeroot = NULL;
 	struct announce findme;
-	findme.trackerid = getTrackerID( db, hostname );
-	findme.torrentid = getTorrentID( db, infohash );
+	findme.trackerid = getTrackerID( hostname );
+	findme.torrentid = getTorrentID( infohash );
 	void * result = tfind( &findme, &treeroot, announceCompare );
 	if( result == NULL ) {
-		insertAnnounce( db, findme.trackerid, findme.torrentid );
+		insertAnnounce( findme.trackerid, findme.torrentid );
 		struct announce * insertme = g_slice_copy( sizeof(struct announce), &findme );
 		tsearch( insertme, &treeroot, announceCompare );
 	}
 }
 
-unsigned int readpcap( pcap_t * in, unsigned int prevcount, MYSQL *db ) {
+unsigned int readpcap( pcap_t * in, unsigned int prevcount ) {
 	char errbuf[PCAP_ERRBUF_SIZE];
 	struct pcap_pkthdr *header;
 	const u_char *packetdata;
 	unsigned int curcount = 0;
-	CURL *curlobj = curl_easy_init();
 	//loop over packets
 	while( pcap_next_ex( in, &header, &packetdata ) == 1 ) {
 		curcount++;
@@ -492,7 +494,7 @@ unsigned int readpcap( pcap_t * in, unsigned int prevcount, MYSQL *db ) {
 			}
 			//insert to DB
 			char *infohash = (char*)tcpdata + 28;
-			logHandshake( db, ipheader->saddr, ipheader->daddr, infohash );
+			logHandshake( ipheader->saddr, ipheader->daddr, infohash );
 		} else if( *tcpdata == 'G' ) {
 			char * newline = index(tcpdata, '\r');
 			int linelen = (int)newline - (int)tcpdata;
@@ -502,15 +504,14 @@ unsigned int readpcap( pcap_t * in, unsigned int prevcount, MYSQL *db ) {
 			char *hostname = g_strstr_len( tcpdata, tcpdatalen, "Host: ") + 6;
 			newline = index(hostname, 0x0D);
 			*newline = '\0';
-			logAnnounce( db, infohashbegin, hostname );
+			logAnnounce( infohashbegin, hostname );
 			curl_free(realurl);
 		}
 	}
-	curl_easy_cleanup(curlobj);
 	return curcount;
 }
 
-MYSQL * initdb ( GKeyFile * conf ) {
+void initdb ( GKeyFile * conf ) {
 	GError *confError = NULL;
 	char *host, *user, *passwd, *dbname;
 	host = g_key_file_get_string( conf, "database", "host", &confError );
@@ -535,15 +536,21 @@ MYSQL * initdb ( GKeyFile * conf ) {
 	if( mysql_library_init(0, NULL, NULL) ) {
 		myexit( "Could not init mysql library" );
 	}
-	MYSQL *db = mysql_init( NULL );
+	db = mysql_init( NULL );
 	if( db == NULL ) {
 		myexit( "Not enough memory to init MYSQL object" );
 	}
 	if( !mysql_real_connect( db, host, user, passwd, dbname, 0, NULL, 0 ) ) {
 		myexit( mysql_error(db) );
 	}
-	return db;
 }
+
+struct inputfile {
+	char *basename;
+	pcap_t *cap;
+	int wd;
+	unsigned int packets_read;
+};
 
 int main( int argc, char* argv[] ) {
 	int status;
@@ -557,21 +564,26 @@ int main( int argc, char* argv[] ) {
 		myexit( confError->message );
 	}
 
-	MYSQL * db = initdb( conf );
+	initdb( conf );
+	curlobj = curl_easy_init();
 
-	//get list of files
 	char *filepattern = g_key_file_get_string( conf, "global", "files", &confError );
+
 	glob_t globbuf;
 	status = glob( filepattern, GLOB_TILDE, NULL, &globbuf );
 	if( status != 0 ) {
 		myexit( "glob failed" );
 	}
 
+	int notifyfd = inotify_init();
+
 	//loop over files
+	struct inputfile inputs[globbuf.gl_pathc];
+	int maxwd = 0;
 	int curfile;
 	for( curfile = 0; curfile < globbuf.gl_pathc; curfile++ ) {
 		char *filename = globbuf.gl_pathv[curfile];
-		char *base = basename(filename);
+		char *base = strdup(basename(filename));
 		//get filepos from conf
 		unsigned int prevcount = 0;
 		if( g_key_file_has_key( conf, "logs", base, &confError ) ) {
@@ -580,15 +592,58 @@ int main( int argc, char* argv[] ) {
 
 		char errbuf[PCAP_ERRBUF_SIZE];
 		pcap_t* in = pcap_open_offline( filename, errbuf );
-		unsigned int curcount = readpcap( in, prevcount, db );
+		unsigned int curcount = readpcap( in, prevcount );
 		//update filepos in conf
 		g_key_file_set_integer( conf, "logs", base, curcount );
-
+		inputs[curfile].basename = base;
+		inputs[curfile].cap = in;
+		inputs[curfile].packets_read = curcount;
+		inputs[curfile].wd = inotify_add_watch( notifyfd, filename, IN_MODIFY );
+		if( inputs[curfile].wd > maxwd ) {
+			maxwd = inputs[curfile].wd;
+		}
 	}
-	globfree( &globbuf );
+
+	struct inputfile **watched_files = (struct inputfile**)malloc(sizeof(struct inputfile*) * maxwd);
+	for( curfile = 0; curfile < globbuf.gl_pathc; curfile++ ) {
+		watched_files[inputs[curfile].wd] = &inputs[curfile];
+	}
+	/* So, given a wd, getting a pcap_t* is now done with one simple array index lookup*/
+
+	FILE *temp = fopen("DELETE_TO_STOP", "w");
+	fclose(temp);
+
+	int stopwd = inotify_add_watch( notifyfd, "DELETE_TO_STOP", IN_DELETE_SELF );
+
+	char buf[1024];
+	int stop = 0;
+	while( 1 ) {
+		int len = read(notifyfd, buf, 1024);
+		int i = 0;
+		int packetsread;
+		while( i < len ) {
+			struct inotify_event *event;
+			event = (struct inotify_event*)buf;
+			if( event->wd == stopwd ) {
+				stop = 1;
+				break;
+			}
+			i += sizeof(struct inotify_event) + event->len;
+			struct inputfile * cur = watched_files[event->wd];
+			cur->packets_read += readpcap( cur->cap, 0 );
+		}
+		if( stop == 1 ) {
+			break;
+		}
+	}
 
 
 	//cleanup
+	for( curfile = 0; curfile < globbuf.gl_pathc; curfile++ ) {
+		g_key_file_set_integer( conf, "logs", inputs[curfile].basename, inputs[curfile].packets_read );
+	}
+	globfree( &globbuf );
+	curl_easy_cleanup( curlobj );
 	FILE *confout = fopen( argv[1], "w" );
 	fputs( g_key_file_to_data(conf, NULL, NULL), confout );
 	fclose(confout);
