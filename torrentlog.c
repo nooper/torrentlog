@@ -625,20 +625,16 @@ int main( int argc, char* argv[] ) {
 			struct inotify_event *event;
 			event = (struct inotify_event*)buf;
 			if( event->wd == stopwd ) {
-				stop = 1;
-				break;
+				goto cleanup;
 			}
 			i += sizeof(struct inotify_event) + event->len;
 			struct inputfile * cur = watched_files[event->wd];
 			cur->packets_read += readpcap( cur->cap, 0 );
 		}
-		if( stop == 1 ) {
-			break;
-		}
 	}
 
 
-	//cleanup
+cleanup:
 	for( curfile = 0; curfile < globbuf.gl_pathc; curfile++ ) {
 		g_key_file_set_integer( conf, "logs", inputs[curfile].basename, inputs[curfile].packets_read );
 	}
