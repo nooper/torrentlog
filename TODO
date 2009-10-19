@@ -1,0 +1,4 @@
+Code cleanup
+More stringent checks while matching HTTP packets than *tcpdata == 'G'
+Check return codes everywhere, idiot proofing, etc
+Watch base dir for changes, and on new file glob() again.
