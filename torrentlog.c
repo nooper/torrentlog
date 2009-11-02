@@ -500,7 +500,8 @@ unsigned int readpcap( pcap_t * in, unsigned int prevcount ) {
 			int linelen = (int)newline - (int)tcpdata;
 			int outlen;
 			char* realurl = curl_easy_unescape(curlobj, tcpdata, linelen, &outlen);
-			char* infohashbegin = g_strstr_len( realurl, outlen, "info_hash") + 10;
+			char* infohashbegin = g_strstr_len(realurl, outlen, "info_hash") + 10;
+			if( infohashbegin == NULL ) continue;
 			char *hostname = g_strstr_len( tcpdata, tcpdatalen, "Host: ") + 6;
 			newline = index(hostname, 0x0D);
 			*newline = '\0';
