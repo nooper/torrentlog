@@ -5,7 +5,7 @@ create table trackers (
 
 create table torrents (
 	torrentid int unsigned auto_increment primary key,
-	infohash char(20) unique
+	infohash binary(20) unique
 );
 
 create table announces (
@@ -16,6 +16,8 @@ create table announces (
 
 create table handshakes (
 	torrentid int unsigned,
-	ip int unsigned,
-	Unique(torrentid, ip)
+	sip int unsigned,
+	dip int unsigned,
+	peerid binary(20),
+	Unique(torrentid, sip, dip, peerid)
 );

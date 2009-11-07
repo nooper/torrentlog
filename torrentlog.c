@@ -39,6 +39,7 @@ struct handshake {
 	unsigned int sip;
 	unsigned int dip;
 	unsigned int torrentid;
+	char *peerid;
 };
 
 void myexit( const char * msg ) {
@@ -115,19 +116,20 @@ unsigned long insertTorrent( unsigned char * infohash ) {
 	return (unsigned long)mysql_stmt_insert_id(stmt);
 }
 
-void insertHandshake( unsigned int torrentid, unsigned int sip, unsigned int dip ) {
+void insertHandshake( unsigned int torrentid, unsigned int sip, unsigned int dip, char *peerid ) {
 	static MYSQL_STMT *stmt;
-	static MYSQL_BIND bind[3];
-	static my_bool is_null[3];
-	static my_bool is_unsigned[3];
-	static my_bool stmterror[3];
+	static MYSQL_BIND bind[4];
+	static my_bool is_null;
+	static my_bool is_unsigned[4];
+	static my_bool stmterror[4];
 	static int prepared = 0;
 	static unsigned int input_torrentid;
 	static unsigned int input_sip;
 	static unsigned int input_dip;
+	static unsigned char input_peerid[20];
 	if( prepared == 0 ) {
 		stmt = mysql_stmt_init(db);
-		char * query = "INSERT INTO handshakes(torrentid, sip, dip) VALUES(?,?,?)";
+		char * query = "INSERT INTO handshakes(torrentid, sip, dip, peerid) VALUES(?,?,?,?)";
 		if( mysql_stmt_prepare( stmt, query, strlen(query) ) ) {
 			myexit( mysql_stmt_error(stmt) );
 		}
@@ -150,6 +152,11 @@ void insertHandshake( unsigned int torrentid, unsigned int sip, unsigned int dip
 		bind[2].is_null = (my_bool*)0;
 		bind[2].is_unsigned = 1;
 		bind[2].error = &stmterror[2];
+		bind[3].buffer_type = MYSQL_TYPE_BLOB;
+		bind[3].buffer = input_peerid;
+		bind[3].buffer_length = 20;
+		bind[3].is_null = &is_null;
+		bind[3].is_unsigned = 1;
 		if( mysql_stmt_bind_param(stmt, bind) ) {
 			mysql_stmt_error(stmt);
 		}
@@ -158,6 +165,12 @@ void insertHandshake( unsigned int torrentid, unsigned int sip, unsigned int dip
 	input_torrentid = torrentid;
 	input_sip = sip;
 	input_dip = dip;
+	if( *peerid != '\0' ) {
+		memcpy( input_peerid, peerid, 20 );
+		is_null = 0;
+	} else {
+		is_null = 1;
+	}
 	int status = mysql_stmt_execute(stmt);
 	switch (status) {
 		case 0:
@@ -426,18 +439,22 @@ unsigned int getTorrentID( char *infohash ) {
 }
 
 int handshakeCompare( const void * ta, const void * tb ) {
-	return memcmp( ta, tb, sizeof(struct handshake) );
+	struct handshake *a = (struct handshake*)ta;
+	struct handshake *b = (struct handshake*)tb;
+	return (a->sip - b->sip) + (a->dip - b->dip) + (a->torrentid - b->torrentid) + strncmp(a->peerid, b->peerid, 20);
 }
 
-void logHandshake( unsigned int sip, unsigned int dip, char *infohash ) {
+void logHandshake( unsigned int sip, unsigned int dip, char *infohash, char *peerid ) {
 	static void * treeroot = NULL;
 	struct handshake findme;
 	findme.torrentid = getTorrentID( infohash );
 	findme.sip = sip;
 	findme.dip = dip;
+	findme.peerid = peerid;
 	void * result = tfind( &findme, &treeroot, handshakeCompare );
 	if( result == NULL ) {
-		insertHandshake( findme.torrentid, ntohl(sip), ntohl(dip) );
+		findme.peerid = g_strndup( peerid, 20 );
+		insertHandshake( findme.torrentid, ntohl(sip), ntohl(dip), findme.peerid );
 		struct handshake * insertme = g_slice_copy( sizeof(struct handshake), &findme );
 		tsearch( insertme, &treeroot, handshakeCompare );
 	}
@@ -494,7 +511,11 @@ unsigned int readpcap( pcap_t * in, unsigned int prevcount ) {
 			}
 			//insert to DB
 			char *infohash = (char*)tcpdata + 28;
-			logHandshake( ipheader->saddr, ipheader->daddr, infohash );
+			char *peerid = "";
+			if( tcpdatalen > 67) { //means there should be a peerid after the infohash
+				peerid = (char*)tcpdata + 48;
+			}
+			logHandshake( ipheader->saddr, ipheader->daddr, infohash, peerid );
 		} else if( *tcpdata == 'G' ) {
 			char * newline = index(tcpdata, '\r');
 			int linelen = (int)newline - (int)tcpdata;
