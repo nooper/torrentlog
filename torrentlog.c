@@ -615,7 +615,6 @@ int main( int argc, char* argv[] ) {
 		char errbuf[PCAP_ERRBUF_SIZE];
 		pcap_t* in = pcap_open_offline( filename, errbuf );
 		unsigned int curcount = readpcap( in, prevcount );
-		//update filepos in conf
 		g_key_file_set_integer( conf, "logs", base, curcount );
 		inputs[curfile].basename = base;
 		inputs[curfile].cap = in;
